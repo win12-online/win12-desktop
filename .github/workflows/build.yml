@@ -35,39 +35,9 @@ jobs:
             args: ""
             rust-targets: ""
 
-    runs-on: ${{ matrix.platform }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-targets }}
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build Tauri application
-        uses: tauri-apps/tauri-action@v0
-        with:
-          args: ${{ matrix.args }}
+    uses: ./.github/workflows/._shared-build.yml
+    with:
+      platform: ${{ matrix.platform }}
+      args: ${{ matrix.args }}
+      rust-targets: ${{ matrix.rust-targets }}
+      name: ${{ matrix.name }}

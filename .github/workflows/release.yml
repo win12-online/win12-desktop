@@ -23,69 +23,55 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest # for Arm based macs (M1 and above).
+          - platform: macos-latest
             args: '--target aarch64-apple-darwin'
-          - platform: macos-latest # for Intel based macs.
+            name: macOS (Apple Silicon)
+            rust-targets: aarch64-apple-darwin
+          - platform: macos-latest
             args: '--target x86_64-apple-darwin'
+            name: macOS (Intel)
+            rust-targets: x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: "--bundles appimage,deb,rpm"
+            name: Linux (x86_64)
+            rust-targets: ""
           - platform: windows-latest
             args: ""
+            name: Windows (x86_64)
+            rust-targets: ""
 
-    runs-on: ${{ matrix.platform }}
+    uses: ./.github/workflows/._shared-build.yml
+    with:
+      platform: ${{ matrix.platform }}
+      args: ${{ matrix.args }}
+      rust-targets: ${{ matrix.rust-targets }}
+      name: ${{ matrix.name }}
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          submodules: recursive
+          pattern: tauri-bundles-*
+          merge-multiple: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          node-version: 20
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          # https://tauri.app/distribute/pipelines/github/#example-workflow
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build and upload Tauri bundles
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.event.inputs.tag }}
-          releaseName: ${{ github.event.inputs.title }}
-          releaseBody: "Automated release built by GitHub Actions."
-          releaseDraft: true
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.title }}
+          body: ${{ github.event.inputs.title }}
+          draft: true
           prerelease: false
-          retryAttempts: 3
-          args: ${{ matrix.args }}
-
-      # tauri-action uploads bundles such as AppImage, deb and rpm, but not the
-      # unbundled executable unless bundles are disabled with --no-bundle.
-      - name: Upload unbundled Linux executable
-        if: matrix.platform == 'ubuntu-22.04'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.inputs.tag }}
-        run: |
-          gh release upload "$RELEASE_TAG" \
-            "tauri/src-tauri/target/release/win12-desktop#win12-desktop-linux-x86_64" \
-            --clobber
+          files: |
+            **/*.AppImage
+            **/*.deb
+            **/*.rpm
+            **/*.dmg
+            **/*.nsis.exe
+            **/*.msi
+            **/*.exe
