@@ -56,10 +56,17 @@ jobs:
         with:
           args: ${{ inputs.args }}
 
+      - name: Debug - list bundle directories
+        run: |
+          echo "=== target tree ==="
+          ls -R tauri/src-tauri/target/*/release/bundle/ 2>/dev/null || echo "No bundle dirs found with wildcard"
+          echo "=== full target dir ==="
+          ls -R tauri/src-tauri/target/ | head -100
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tauri-bundles-${{ inputs.platform }}
+          name: tauri-bundles-${{ inputs.name }}
           path: |
             tauri/src-tauri/target/release/bundle/**/*
             tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*
