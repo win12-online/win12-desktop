@@ -35,7 +35,7 @@ jobs:
             args: ""
             rust-targets: ""
 
-    uses: ./.github/workflows/._shared-build.yml
+    uses: ./.github/workflows/_shared-build.yaml
     with:
       platform: ${{ matrix.platform }}
       args: ${{ matrix.args }}
