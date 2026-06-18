@@ -57,6 +57,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           pattern: tauri-bundles-*
+          path: ./release
           merge-multiple: true
       - name: Debug - list files
         run: |
@@ -70,10 +71,4 @@ jobs:
           draft: true
           prerelease: false
           files: |
-            **/*.AppImage
-            **/*.deb
-            **/*.rpm
-            **/*.dmg
-            **/*.nsis.exe
-            **/*.msi
-            **/*.exe
+            release/**/*

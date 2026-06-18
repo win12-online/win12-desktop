@@ -1,4 +1,4 @@
-name: ._shared_build
+name: (shared) build
 
 on:
   workflow_call:
@@ -67,7 +67,10 @@ jobs:
         with:
           name: tauri-bundles-${{ inputs.name }}
           path: |
-            tauri/src-tauri/target/release/bundle/**/*
-            tauri/src-tauri/target/aarch64-apple-darwin/release/bundle/**/*
-            tauri/src-tauri/target/x86_64-apple-darwin/release/bundle/**/*
-          retention-days: 1
+            tauri/src-tauri/target/release/bundle/appimage/*.AppImage
+            tauri/src-tauri/target/release/bundle/deb/*.deb
+            tauri/src-tauri/target/release/bundle/rpm/*.rpm
+            tauri/src-tauri/target/release/bundle/msi/*.msi
+            tauri/src-tauri/target/release/bundle/nsis/*.exe
+            tauri/src-tauri/*/target/release/bundle/dmg/*.dmg
+          retention-days: 5
