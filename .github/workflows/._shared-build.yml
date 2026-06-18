@@ -72,5 +72,5 @@ jobs:
             tauri/src-tauri/target/release/bundle/rpm/*.rpm
             tauri/src-tauri/target/release/bundle/msi/*.msi
             tauri/src-tauri/target/release/bundle/nsis/*.exe
-            tauri/src-tauri/*/target/release/bundle/dmg/*.dmg
+            tauri/src-tauri/target/*/release/bundle/dmg/*.dmg
           retention-days: 5
