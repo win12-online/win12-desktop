@@ -57,9 +57,10 @@ jobs:
           args: ${{ inputs.args }}
 
       - name: Debug - list bundle directories
+        shell: bash # On Windows this will be Git Bash
         run: |
           echo "=== target tree ==="
-          ls -R tauri/src-tauri/target/*/release/bundle/ || true
+          tree tauri/src-tauri/target/*/release/bundle/ || true
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
