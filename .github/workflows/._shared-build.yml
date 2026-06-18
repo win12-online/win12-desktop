@@ -59,10 +59,7 @@ jobs:
       - name: Debug - list bundle directories
         run: |
           echo "=== target tree ==="
-          ls -R tauri/src-tauri/target/*/release/bundle/ 2>/dev/null || echo "No bundle dirs found with wildcard"
-          echo "=== full target dir ==="
-          ls -R tauri/src-tauri/target/ | head -100
-
+          ls -R tauri/src-tauri/target/*/release/bundle/ || true
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
