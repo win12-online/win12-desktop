@@ -58,7 +58,9 @@ jobs:
         with:
           pattern: tauri-bundles-*
           merge-multiple: true
-
+      - name: Debug - list files
+        run: |
+          tree .
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
