@@ -7,11 +7,6 @@ on:
         description: "Release tag，例如 v0.1.0"
         type: string
         required: true
-      title:
-        description: "Release title"
-        type: string
-        required: true
-        default: "Win12-desktop vX.X.X"
 
 permissions:
   contents: write
@@ -65,9 +60,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag }}
-          name: ${{ github.event.inputs.title }}
-          body: ${{ github.event.inputs.title }}
+          tag_name: ${{ inputs.tag }}
+          name: Win12-desktop ${{ inputs.tag }}
+          body: |
+            # Win12 Desktop ${{ inputs.tag }}
           draft: true
           prerelease: false
           files: |
