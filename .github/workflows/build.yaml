@@ -2,6 +2,12 @@ name: Build
 
 on:
   push:
+    paths:
+      - 'tauri/**'
+      - '**.js'
+      - '**.json'
+      - '.gitmodules'
+      - '.github/workflows/**'
   pull_request:
 
 concurrency:
@@ -17,20 +23,20 @@ jobs:
         include:
           - name: macOS (Apple Silicon)
             platform: macos-latest
-            args: "--target aarch64-apple-darwin"
+            args: '--target aarch64-apple-darwin'
             rust-targets: aarch64-apple-darwin
           - name: macOS (Intel)
             platform: macos-latest
-            args: "--target x86_64-apple-darwin"
+            args: '--target x86_64-apple-darwin'
             rust-targets: x86_64-apple-darwin
           - name: Linux (x86_64)
             platform: ubuntu-22.04
-            args: "--bundles appimage,deb,rpm"
-            rust-targets: ""
+            args: '--bundles appimage,deb,rpm'
+            rust-targets: ''
           - name: Windows (x86_64)
             platform: windows-latest
-            args: ""
-            rust-targets: ""
+            args: ''
+            rust-targets: ''
 
     uses: ./.github/workflows/_shared-build.yaml
     with:
