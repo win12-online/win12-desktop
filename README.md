@@ -40,7 +40,7 @@ win12 桌面端，基于 Tauri 封装，将 Windows 12 网页版变成独立桌�
 npm run dev
 ```
 
-在第二个终端中使用此命令启动Tarui
+在第二个终端中使用此命令启动Tauri
 
 ```bash
 npm run tauri dev
