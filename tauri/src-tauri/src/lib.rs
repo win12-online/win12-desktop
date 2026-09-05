@@ -411,7 +411,7 @@ fn stream_ping_output<R: std::io::Read>(stream: R, window: tauri::Window, reques
         match reader.read_until(b'\n', &mut buffer) {
             Ok(0) => break,
             Ok(_) => {
-                let text = String::from_utf8_lossy(&buffer).to_string();
+                let text = decode_ping_output(&buffer);
                 emit_ping_output(&window, &request_id, text, false, true);
             }
             Err(e) => {
@@ -420,6 +420,25 @@ fn stream_ping_output<R: std::io::Read>(stream: R, window: tauri::Window, reques
             }
         }
     }
+}
+
+fn decode_ping_output(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+
+    // Windows ping still emits the local console code page, usually GBK/CP936.
+    #[cfg(target_os = "windows")]
+    {
+        let (text, _, _) = encoding_rs::GBK.decode(bytes);
+        return text.into_owned();
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+
 }
 
 #[tauri::command]
@@ -457,6 +476,25 @@ fn emit_ping_output(
             success,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_ping_output;
+
+    #[test]
+    fn decodes_utf8_ping_output() {
+        let text = "Reply from 127.0.0.1: bytes=32 time<1ms TTL=128\r\n";
+        assert_eq!(decode_ping_output(text.as_bytes()), text);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn decodes_windows_gbk_ping_output() {
+        let text = "来自 127.0.0.1 的回复: 字节=32 时间<1ms TTL=128\r\n";
+        let (bytes, _, _) = encoding_rs::GBK.encode(text);
+        assert_eq!(decode_ping_output(bytes.as_ref()), text);
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
