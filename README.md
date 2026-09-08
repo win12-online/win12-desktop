@@ -95,6 +95,7 @@ npm run tauri build
 - [Win12 Online](https://github.com/win12-online/win12)：Win12 网页版主项目
 - [Win12 Wiki](https://win12-wiki.lingbopro.qzz.io/zh/desktop/)：桌面版使用文档
 - [Win12 Desktop Releases](https://github.com/win12-online/win12-desktop/releases)：历史版本与安装包
+- [Win12 Desktop Homebrew Tap](https://github.com/freedom-323/homebrew-win12-desktop)：Win12 Desktop 的 Homebrew 安装仓库
 
 ## 许可证
 
