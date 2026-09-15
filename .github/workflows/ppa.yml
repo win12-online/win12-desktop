@@ -279,16 +279,22 @@ jobs:
           tar -xzf "$BUILD_DIR/${PKG}_${UPSTREAM_VERSION}.orig.tar.gz" -C "$BUILD_DIR"
           # Overlay ONLY debian/ files tracked by Git (no local build cruft).
           git archive HEAD -- debian | tar -x -C "$src"
-          # Normalise the first changelog entry to the release version/dist.
-          python3 scripts/prepare-ppa-changelog.py \
-            "$UPSTREAM_VERSION" "$DIST" \
-            --debian-revision "$DEBIAN_REVISION" \
-            --changelog "$src/debian/changelog"
+          # debian/changelog is hand-maintained: never rewrite it here. Only
+          # verify that the first (manual) entry already matches the release.
+          srcpkg="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Source)"
           v="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Version)"
           d="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Distribution)"
-          [[ "$v" == "$DEBIAN_VERSION" ]] || { echo "::error::changelog version '$v' != '$DEBIAN_VERSION'"; exit 1; }
-          [[ "$d" == "$DIST" ]]             || { echo "::error::changelog distro '$d' != '$DIST'"; exit 1; }
-          echo "changelog: $v / $d"
+          [[ "$srcpkg" == "$PKG" ]] || { echo "::error::changelog Source '$srcpkg' != '$PKG'"; exit 1; }
+          [[ "$v" == "$DEBIAN_VERSION" ]] || {
+            echo "::error::debian/changelog 首条版本为 '$v'，期望 '$DEBIAN_VERSION'。"
+            echo "::error::debian/changelog 为人工维护文件，CI 不会自动修改；请先手工添加该版本条目（distribution: $DIST）并推送到 Release tag 所在提交。"
+            exit 1
+          }
+          [[ "$d" == "$DIST" ]] || {
+            echo "::error::debian/changelog 首条发行版为 '$d'，期望 '$DIST'；请手工修正后重新发布。"
+            exit 1
+          }
+          echo "changelog (manual): $srcpkg / $v / $d"
 
       - name: Build unsigned source package (debuild -S -sa)
         shell: bash
