@@ -1,0 +1,503 @@
+name: Publish to Ubuntu PPA
+
+# Builds a Debian source package from a published GitHub Release and uploads
+# it to ppa:win12-online/win12-desktop for Ubuntu 26.04 (resolute).
+#
+# The orig tarball is produced by scripts/export-orig-tarball.sh, which
+# expands the nested Git submodules (tauri/src and tauri/src/lang) instead of
+# using a plain `git archive HEAD`. The Debian source tree is then assembled
+# by extracting that pristine orig tarball and overlaying ONLY the tracked
+# debian/ directory, so dpkg-source never sees unexpected upstream changes.
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag，可带 v 前缀，例如 v0.3.0 或 0.3.0'
+        required: true
+        type: string
+      confirm_upload:
+        description: '勾选才会真正签名并上传到 PPA；不勾选则只构建并产出 artifact（演练）'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never run two uploads for the same ref at once; let the first finish.
+concurrency:
+  group: ppa-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PKG: win12-desktop
+  DIST: resolute
+  UBUNTU_RELEASE: '26.04'
+  DEBIAN_REVISION: '1~ubuntu26.04.1'
+  PPA: ppa:win12-online/win12-desktop
+
+jobs:
+  publish:
+    name: Build source package and upload to PPA
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      # Sibling of the checkout, so the Debian build never pollutes the Git
+      # work tree / orig tarball. The github context is usable in job-level
+      # env (the runner context is not).
+      BUILD_DIR: ${{ github.workspace }}/../ppa-build
+      GPG_HOME: ${{ github.workspace }}/../ppa-gnupg
+      GNUPGHOME: ${{ github.workspace }}/../ppa-gnupg
+      # Populated by the "Resolve and validate release version" step; declared
+      # here as defaults so step conditions/expressions always type-check.
+      RELEASE_TAG: ''
+      UPSTREAM_VERSION: ''
+      DEBIAN_VERSION: ''
+      UPLOAD: '0'
+
+    steps:
+      - name: Resolve and validate release version
+        id: ver
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          INPUT_TAG: ${{ inputs.tag }}
+          CONFIRM_UPLOAD: ${{ inputs.confirm_upload }}
+        run: |
+          set -euo pipefail
+
+          tag=""
+          prerelease="false"
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            tag="$RELEASE_TAG_NAME"
+            prerelease="${RELEASE_PRERELEASE:-false}"
+          else
+            tag="$INPUT_TAG"
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "::error::无法确定 Release tag（release 事件或手动输入均为空）"
+            exit 1
+          fi
+
+          # Pre-releases never go to the stable PPA.
+          if [[ "$prerelease" == "true" ]]; then
+            echo "::error::该 Release 被标记为 pre-release，拒绝上传到 PPA: $tag"
+            exit 1
+          fi
+
+          # Strip exactly one leading 'v': v0.3.0 -> 0.3.0 (0.3.0 stays).
+          upstream="${tag#v}"
+          if [[ ! "$upstream" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag '$tag' 去掉可选的 v 前缀后不是合法的 X.Y.Z 上游版本: '$upstream'"
+            exit 1
+          fi
+
+          debian_version="${upstream}-${DEBIAN_REVISION}"
+
+          upload=0
+          if [[ "$EVENT_NAME" == "release" ]]; then
+            upload=1
+          elif [[ "${CONFIRM_UPLOAD:-false}" == "true" ]]; then
+            upload=1
+          fi
+
+          {
+            echo "RELEASE_TAG=$tag"
+            echo "UPSTREAM_VERSION=$upstream"
+            echo "DEBIAN_VERSION=$debian_version"
+            echo "UPLOAD=$upload"
+          } >> "$GITHUB_ENV"
+
+          echo "::group::版本摘要（不含任何密钥）"
+          echo "event          : $EVENT_NAME"
+          echo "release tag    : $tag"
+          echo "upstream ver   : $upstream"
+          echo "debian version : $debian_version"
+          echo "distribution   : $DIST"
+          echo "PPA            : $PPA"
+          echo "will upload    : $upload (1=真实上传, 0=仅构建演练)"
+          echo "::endgroup::"
+
+      - name: Fail fast when signing secrets are missing
+        if: env.UPLOAD == '1'
+        shell: bash
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+          PPA_GPG_PASSPHRASE: ${{ secrets.PPA_GPG_PASSPHRASE }}
+          PPA_GPG_KEY_ID: ${{ secrets.PPA_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for var in PPA_GPG_PRIVATE_KEY PPA_GPG_PASSPHRASE PPA_GPG_KEY_ID; do
+            if [[ -z "${!var:-}" ]]; then
+              echo "::error::缺少必需的 Secret: $var"
+              missing=1
+            fi
+          done
+          if [[ "$PPA_GPG_KEY_ID" != "F280B508B651B154E207327107B4C06652A89FE1" ]]; then
+            echo "::error::PPA_GPG_KEY_ID 与预期的 PPA 专用密钥指纹不一致（已隐藏具体值）"
+            missing=1
+          fi
+          [[ "$missing" -eq 0 ]] || exit 1
+          echo "所有签名 Secret 均已提供。"
+
+      - name: Checkout (with nested submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          lfs: true
+
+      - name: Re-assert recursive submodule initialisation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive
+          echo "::group::git submodule status --recursive"
+          git submodule status --recursive
+          echo "::endgroup::"
+
+      - name: Install packaging toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # debian/rules invokes cargo directly (no dh-sequence-rust addon),
+          # so the Rust toolchain plus the Tauri/GTK Build-Depends from
+          # debian/control are sufficient. These must all be present because
+          # dpkg-buildpackage verifies Build-Depends even for a source build.
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates tar xz-utils gzip bzip2 \
+            build-essential debhelper devscripts dpkg-dev fakeroot lintian dput \
+            cargo rustc pkgconf python3 git git-lfs gnupg \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev
+          git lfs version || true
+          dpkg-query -W -f='dput ${Version}\n' dput
+          dpkg-buildpackage --version | head -1
+
+      - name: Cross-check version consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re, sys
+
+          expected = os.environ["UPSTREAM_VERSION"]
+          root = os.environ["GITHUB_WORKSPACE"]
+          errors = []
+
+          def read(rel):
+              with open(os.path.join(root, rel), encoding="utf-8") as fh:
+                  return fh.read()
+
+          # package.json
+          if json.loads(read("package.json"))["version"] != expected:
+              errors.append("package.json version mismatch")
+
+          # tauri.conf.json
+          if json.loads(read("tauri/src-tauri/tauri.conf.json"))["version"] != expected:
+              errors.append("tauri/src-tauri/tauri.conf.json version mismatch")
+
+          # Cargo.toml: only the version inside the [package] table.
+          cargo = read("tauri/src-tauri/Cargo.toml")
+          m = re.search(r"^\[package\](?P<body>.*?)(?=^\[)", cargo, re.S | re.M)
+          cv = re.search(r'^version\s*=\s*"([^"]+)"', m.group("body"), re.M) if m else None
+          if not cv or cv.group(1) != expected:
+              errors.append(f"Cargo.toml [package] version mismatch (got {cv.group(1) if cv else '?'})")
+
+          # Cargo.lock: the win12-desktop package entry.
+          lock = read("tauri/src-tauri/Cargo.lock")
+          lv = None
+          for block in lock.split("[[package]]"):
+              if re.search(r'^name = "win12-desktop"', block, re.M):
+                  mm = re.search(r'^version = "([^"]+)"', block, re.M)
+                  lv = mm.group(1) if mm else None
+          if lv != expected:
+              errors.append(f"Cargo.lock win12-desktop version mismatch (got {lv})")
+
+          if errors:
+              for e in errors:
+                  print(f"::error::{e}; tag expects {expected}")
+              print("请先运行 scripts/bump-version.sh 并在该提交上重新打 Release tag。")
+              sys.exit(1)
+          print(f"所有版本字段一致: {expected}")
+          PY
+
+      - name: Build pristine upstream orig tarball (submodules expanded)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$BUILD_DIR"
+          mkdir -p "$BUILD_DIR"
+          chmod +x scripts/export-orig-tarball.sh
+          scripts/export-orig-tarball.sh "$UPSTREAM_VERSION" "$BUILD_DIR"
+
+      - name: Verify orig tarball contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="$BUILD_DIR/${PKG}_${UPSTREAM_VERSION}.orig.tar.gz"
+          prefix="${PKG}-${UPSTREAM_VERSION}"
+          tar -tzf "$tarball" > "$BUILD_DIR/orig.listing"
+          echo "::group::orig tarball canary files"
+          for rel in \
+            "tauri/src/apps/icons/explorer/disk.png" \
+            "tauri/src/icon/bilibili.png" \
+            "tauri/src/media/Windows Background.wav" \
+            "tauri/src/lang/README.md" \
+            "tauri/src/lang/lang/lang_en.properties"
+          do
+            grep -Fxq "$prefix/$rel" "$BUILD_DIR/orig.listing"
+            echo "OK  $rel"
+          done
+          echo "::endgroup::"
+          if grep -E "(^|/)\.git($|/)" "$BUILD_DIR/orig.listing"; then
+            echo "::error::orig tarball 中出现了 .git 元数据"; exit 1
+          fi
+          if grep -E "^${prefix}/debian(/|$)" "$BUILD_DIR/orig.listing"; then
+            echo "::error::orig tarball 中不允许包含 debian/ 目录"; exit 1
+          fi
+          echo "entries: $(wc -l < "$BUILD_DIR/orig.listing")"
+
+      - name: Assemble Debian source tree (orig + tracked debian/)
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$BUILD_DIR/${PKG}-${UPSTREAM_VERSION}"
+          tar -xzf "$BUILD_DIR/${PKG}_${UPSTREAM_VERSION}.orig.tar.gz" -C "$BUILD_DIR"
+          # Overlay ONLY debian/ files tracked by Git (no local build cruft).
+          git archive HEAD -- debian | tar -x -C "$src"
+          # Normalise the first changelog entry to the release version/dist.
+          python3 scripts/prepare-ppa-changelog.py \
+            "$UPSTREAM_VERSION" "$DIST" \
+            --debian-revision "$DEBIAN_REVISION" \
+            --changelog "$src/debian/changelog"
+          v="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Version)"
+          d="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Distribution)"
+          [[ "$v" == "$DEBIAN_VERSION" ]] || { echo "::error::changelog version '$v' != '$DEBIAN_VERSION'"; exit 1; }
+          [[ "$d" == "$DIST" ]]             || { echo "::error::changelog distro '$d' != '$DIST'"; exit 1; }
+          echo "changelog: $v / $d"
+
+      - name: Build unsigned source package (debuild -S -sa)
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$BUILD_DIR/${PKG}-${UPSTREAM_VERSION}"
+          cd "$src"
+          # -us -uc: do not sign here; debsign signs with the PPA key later.
+          # -sa: include the orig tarball (required for new upstream uploads).
+          debuild -S -sa -us -uc
+
+      - name: Run lintian (warnings shown, errors fail the job)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          changes="${PKG}_${DEBIAN_VERSION}_source.changes"
+          lintian -i -I --show-overrides "$changes" 2>&1 | tee lintian.log || true
+          if grep -qE '^E:' lintian.log; then
+            echo "::error::lintian reported error-level tags; see lintian.log"
+            grep -E '^E:' lintian.log
+            exit 1
+          fi
+          echo "lintian: 没有 E: 级别问题（W:/I: 仅记录在日志与 artifact 中）。"
+
+      - name: Import PPA GPG key into an ephemeral keyring
+        if: env.UPLOAD == '1'
+        shell: bash
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+          PPA_GPG_PASSPHRASE: ${{ secrets.PPA_GPG_PASSPHRASE }}
+          PPA_GPG_KEY_ID: ${{ secrets.PPA_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 "$GPG_HOME"
+          cat > "$GPG_HOME/gpg-agent.conf" <<'EOF'
+          allow-loopback-pinentry
+          allow-preset-passphrase
+          default-cache-ttl 86400
+          max-cache-ttl 86400
+          EOF
+          cat > "$GPG_HOME/gpg.conf" <<'EOF'
+          use-agent
+          pinentry-mode loopback
+          EOF
+          chmod 600 "$GPG_HOME"/*.conf
+          gpgconf --kill gpg-agent || true
+
+          # Import the ASCII-armored key from the secret without echoing it.
+          printf '%s' "$PPA_GPG_PRIVATE_KEY" | gpg --batch --no-tty --import
+
+          fpr="$(gpg --batch --list-secret-keys --with-colons \
+                   | awk -F: '/^fpr:/{print $10; exit}')"
+          if [[ "${fpr^^}" != "${PPA_GPG_KEY_ID^^}" ]]; then
+            echo "::error::导入的密钥指纹与 PPA_GPG_KEY_ID 不一致"
+            exit 1
+          fi
+
+          preset=""
+          for cand in \
+            "$(command -v gpg-preset-passphrase 2>/dev/null || true)" \
+            /usr/lib/gnupg/gpg-preset-passphrase \
+            /usr/libexec/gpg-preset-passphrase
+          do
+            if [[ -n "$cand" && -x "$cand" ]]; then preset="$cand"; break; fi
+          done
+          [[ -n "$preset" ]] || { echo "::error::找不到 gpg-preset-passphrase"; exit 1; }
+
+          # grp: records (field 10 = keygrip) only appear with --with-keygrip.
+          while IFS= read -r grip; do
+            [[ -n "$grip" ]] && printf '%s' "$PPA_GPG_PASSPHRASE" | "$preset" --preset "$grip"
+          done < <(gpg --batch --list-secret-keys --with-keygrip --with-colons "$fpr" \
+                     | awk -F: '/^grp:/{print $10}')
+
+          # Prove the passphrase was really cached in the agent and that a
+          # fully non-interactive sign works (this is exactly how debsign
+          # invokes gpg: no --passphrase-fd, relying on the preset cache).
+          echo "ppa gpg self-test" | gpg --batch --no-tty \
+            --local-user "$fpr" --clearsign -o /dev/null
+
+          echo "GPG key ready: ...${fpr: -16} (full fingerprint not logged)"
+
+      - name: Sign dsc/buildinfo/changes with debsign
+        if: env.UPLOAD == '1'
+        shell: bash
+        env:
+          PPA_GPG_KEY_ID: ${{ secrets.PPA_GPG_KEY_ID }}
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          changes="${PKG}_${DEBIAN_VERSION}_source.changes"
+          # -k must be attached to the id ("-kFINGERPRINT") or debsign would
+          # treat the fingerprint as a file name.
+          debsign --re-sign -k"$PPA_GPG_KEY_ID" "$changes"
+
+      - name: Verify GPG signatures
+        if: env.UPLOAD == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          # Modern dpkg signs inline; fall back to a detached .asc sibling
+          # just in case the builder uses the older signature style.
+          verify_signed() {
+            if gpg --batch --verify "$1" >/dev/null 2>&1; then
+              return 0
+            fi
+            if [[ -f "$1.asc" ]] && gpg --batch --verify "$1.asc" "$1" >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "::error::no valid signature found for $1"
+            gpg --batch --verify "$1" || true
+            return 1
+          }
+          for f in \
+            "${PKG}_${DEBIAN_VERSION}.dsc" \
+            "${PKG}_${DEBIAN_VERSION}_source.buildinfo" \
+            "${PKG}_${DEBIAN_VERSION}_source.changes"
+          do
+            verify_signed "$f"
+            echo "verified signature: $f"
+          done
+
+      - name: Validate .changes before upload
+        if: env.UPLOAD == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          base="${PKG}_${DEBIAN_VERSION}"
+          changes="${base}_source.changes"
+
+          for f in \
+            "${base}.dsc" \
+            "${PKG}_${UPSTREAM_VERSION}.orig.tar.gz" \
+            "${base}.debian.tar.xz" \
+            "${base}_source.buildinfo" \
+            "$changes"
+          do
+            [[ -f "$f" ]] || { echo "::error::缺少待上传文件: $f"; exit 1; }
+          done
+
+          distro="$(awk -F': ' '/^Distribution:/{print $2; exit}' "$changes")"
+          ver="$(awk -F': ' '/^Version:/{print $2; exit}' "$changes")"
+          [[ "$distro" == "$DIST" ]] || { echo "::error::distribution 为 '$distro'，期望 $DIST"; exit 1; }
+          [[ "$ver" == "$DEBIAN_VERSION" ]] || { echo "::error::changes 版本为 '$ver'，期望 $DEBIAN_VERSION"; exit 1; }
+
+          # Every file referenced by a checksum block must exist locally.
+          mapfile -t referenced < <(
+            awk '/^(Files|Checksums-Sha1|Checksums-Sha256):/{c=1;next} /^$/{c=0} c{print $NF}' "$changes"
+          )
+          for f in "${referenced[@]}"; do
+            [[ -f "$f" ]] || { echo "::error::.changes 引用了不存在的文件: $f"; exit 1; }
+          done
+
+          # Never let a stale dput marker masquerade as this run's upload.
+          rm -f ./*.upload
+
+          echo "::group::上传前安全摘要"
+          echo "PPA           : $PPA"
+          echo "Distribution  : $distro"
+          echo "Version       : $ver"
+          echo "Files         :"
+          sha256sum \
+            "${base}.dsc" \
+            "${PKG}_${UPSTREAM_VERSION}.orig.tar.gz" \
+            "${base}.debian.tar.xz" \
+            "${base}_source.buildinfo" \
+            "$changes"
+          echo "::endgroup::"
+
+      - name: Upload source package to PPA with dput
+        if: env.UPLOAD == '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$BUILD_DIR"
+          changes="${PKG}_${DEBIAN_VERSION}_source.changes"
+          # No --force and no retry loop: a rejection (e.g. same version
+          # already uploaded) must fail the job loudly instead of being
+          # papered over. dput is non-interactive and uses the signature in
+          # the .changes for Launchpad authorisation.
+          if ! dput "$PPA" "$changes"; then
+            echo "::error::dput 上传失败。若提示版本已存在，请勿强制覆盖，应改用新版本号。"
+            exit 1
+          fi
+          echo "dput 已接受上传: $changes -> $PPA"
+          ls -1 ./*.upload 2>/dev/null || true
+
+      - name: Note dry-run outcome
+        if: env.UPLOAD != '1'
+        shell: bash
+        run: |
+          echo "演练模式：已构建源码包并通过 lintian，但未签名/未上传 PPA。"
+          echo "手动触发时勾选 confirm_upload 才会真正上传。"
+
+      - name: Upload source package artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ppa-source-${{ env.UPSTREAM_VERSION }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            ${{ env.BUILD_DIR }}/*.dsc
+            ${{ env.BUILD_DIR }}/*.orig.tar.gz
+            ${{ env.BUILD_DIR }}/*.debian.tar.xz
+            ${{ env.BUILD_DIR }}/*.buildinfo
+            ${{ env.BUILD_DIR }}/*.changes
+            ${{ env.BUILD_DIR }}/*.build
+            ${{ env.BUILD_DIR }}/*.upload
+            ${{ env.BUILD_DIR }}/lintian.log
