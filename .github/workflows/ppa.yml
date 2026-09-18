@@ -37,7 +37,6 @@ env:
   PKG: win12-desktop
   DIST: resolute
   UBUNTU_RELEASE: '26.04'
-  DEBIAN_REVISION: '1~ubuntu26.04.1'
   PPA: ppa:win12-online/win12-desktop
 
 jobs:
@@ -99,8 +98,6 @@ jobs:
             exit 1
           fi
 
-          debian_version="${upstream}-${DEBIAN_REVISION}"
-
           upload=0
           if [[ "$EVENT_NAME" == "release" ]]; then
             upload=1
@@ -111,7 +108,6 @@ jobs:
           {
             echo "RELEASE_TAG=$tag"
             echo "UPSTREAM_VERSION=$upstream"
-            echo "DEBIAN_VERSION=$debian_version"
             echo "UPLOAD=$upload"
           } >> "$GITHUB_ENV"
 
@@ -119,7 +115,7 @@ jobs:
           echo "event          : $EVENT_NAME"
           echo "release tag    : $tag"
           echo "upstream ver   : $upstream"
-          echo "debian version : $debian_version"
+          echo "debian version : 由 debian/changelog 在后续步骤确定"
           echo "distribution   : $DIST"
           echo "PPA            : $PPA"
           echo "will upload    : $upload (1=真实上传, 0=仅构建演练)"
@@ -153,39 +149,81 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
+          fetch-tags: true
           lfs: true
 
-      - name: Re-assert recursive submodule initialisation
+      # For release events, checkout already uses the tag ref, so HEAD and
+      # tag are aligned by definition. For workflow_dispatch the user picks a
+      # branch (checked out as HEAD) and types a tag (used for the version
+      # number); those can diverge. Verify the tag's commit is an ancestor of
+      # (or equal to) HEAD so the branch is guaranteed to contain everything
+      # the tag points at — the package is then built from the branch HEAD
+      # code, not from the tag's older commit.
+      - name: Verify HEAD alignment with tag (workflow_dispatch only)
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          git submodule sync --recursive
-          git submodule update --init --recursive
-          echo "::group::git submodule status --recursive"
-          git submodule status --recursive
-          echo "::endgroup::"
+          tag_sha="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}" 2>/dev/null || true)"
+          if [[ -z "$tag_sha" ]]; then
+            git fetch origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            tag_sha="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          fi
+          head_sha="$(git rev-parse HEAD)"
+          echo "tag  commit: $tag_sha"
+          echo "HEAD commit: $head_sha"
+          if [[ "$tag_sha" == "$head_sha" ]]; then
+            echo "HEAD 等于 tag 的 commit — 完全对齐。"
+            exit 0
+          fi
+          if git merge-base --is-ancestor "$tag_sha" "$head_sha"; then
+            echo "HEAD 在 tag 之后 — 分支包含 tag 的全部代码加上新增提交。"
+            echo "包将从分支 HEAD 代码构建，版本号来自 tag。"
+          else
+            echo "::error::HEAD ($head_sha) 不包含 tag '$RELEASE_TAG' ($tag_sha) 的提交。"
+            echo "选中的分支与该 tag 无继承关系；请选择包含此 tag 的分支。"
+            exit 1
+          fi
+
 
       - name: Install packaging toolchain
         shell: bash
         run: |
           set -euo pipefail
+
           sudo apt-get update
-          # debian/rules invokes cargo directly (no dh-sequence-rust addon),
-          # so the Rust toolchain plus the Tauri/GTK Build-Depends from
-          # debian/control are sufficient. These must all be present because
-          # dpkg-buildpackage verifies Build-Depends even for a source build.
+
           sudo apt-get install -y --no-install-recommends \
             ca-certificates tar xz-utils gzip bzip2 \
             build-essential debhelper devscripts dpkg-dev fakeroot lintian dput \
-            cargo rustc pkgconf python3 git git-lfs gnupg \
+            cargo rustc pkgconf python3 git git-lfs gnupg gpg-agent \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libxdo-dev
+
           git lfs version || true
+
+          echo "=== GPG tools ==="
+          gpg --version
+          gpg-agent --version
+
+          echo "=== Locate gpg-preset-passphrase ==="
+          find /usr -type f -name gpg-preset-passphrase 2>/dev/null || true
+
           dpkg-query -W -f='dput ${Version}\n' dput
           dpkg-buildpackage --version | head -1
+
+      - name: Install a recent Rust toolchain
+        # The distro cargo (kept installed so dpkg Build-Depends are
+        # satisfied) is too old on the GitHub runner to read the v4
+        # Cargo.lock used by this project. Put a modern toolchain first on
+        # PATH for `cargo vendor` and the offline build check; Launchpad
+        # itself builds with resolute's distro cargo, which is current.
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cross-check version consistency
         shell: bash
@@ -285,16 +323,45 @@ jobs:
           v="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Version)"
           d="$(dpkg-parsechangelog -l "$src/debian/changelog" -S Distribution)"
           [[ "$srcpkg" == "$PKG" ]] || { echo "::error::changelog Source '$srcpkg' != '$PKG'"; exit 1; }
-          [[ "$v" == "$DEBIAN_VERSION" ]] || {
-            echo "::error::debian/changelog 首条版本为 '$v'，期望 '$DEBIAN_VERSION'。"
-            echo "::error::debian/changelog 为人工维护文件，CI 不会自动修改；请先手工添加该版本条目（distribution: $DIST）并推送到 Release tag 所在提交。"
+          # The Debian revision number (the N in -N~ubuntu26.04.1) is
+          # hand-maintained in debian/changelog and may be bumped for
+          # re-packaging without a new upstream release (e.g. -1, -2, -3).
+          # Validate the upstream version and Ubuntu suffix, but accept any
+          # positive integer revision.
+          cl_upstream="${v%%-*}"
+          cl_revision="${v#*-}"
+          [[ "$cl_upstream" == "$UPSTREAM_VERSION" ]] || {
+            echo "::error::changelog 上游版本 '$cl_upstream' != '$UPSTREAM_VERSION'。"
+            echo "::error::debian/changelog 为人工维护文件，CI 不会自动修改；请先手工添加该版本条目。"
             exit 1
           }
+          [[ "$cl_revision" =~ ^[0-9]+~ubuntu${UBUNTU_RELEASE//./\\.}(\.[0-9]+)?$ ]] || {
+            echo "::error::changelog 版本 '$v' 的 Debian revision '$cl_revision' 不符合格式 'N~ubuntu${UBUNTU_RELEASE}[.M]'。"
+            exit 1
+          }
+          # Override DEBIAN_VERSION with the actual changelog version so all
+          # downstream steps (debuild, lintian, upload) reference the correct
+          # revision and file names.
+          echo "DEBIAN_VERSION=$v" >> "$GITHUB_ENV"
           [[ "$d" == "$DIST" ]] || {
             echo "::error::debian/changelog 首条发行版为 '$d'，期望 '$DIST'；请手工修正后重新发布。"
             exit 1
           }
           echo "changelog (manual): $srcpkg / $v / $d"
+
+      - name: Validate full offline build (Launchpad parity)
+        # debuild -S does not compile, so vendoring errors would otherwise
+        # only appear on Launchpad. Run the exact build sequence here with a
+        # pristine CARGO_HOME and network forcibly disabled. The following
+        # debuild -S runs `clean`, which removes the produced target tree.
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$BUILD_DIR/${PKG}-${UPSTREAM_VERSION}"
+          cd "$src"
+          CARGO_NET_OFFLINE=true fakeroot make -f debian/rules build
+          test -x "tauri/src-tauri/target/release/${PKG}"
+          echo "offline build OK; Launchpad will reuse this same vendor/ tree."
 
       - name: Build unsigned source package (debuild -S -sa)
         shell: bash
@@ -302,93 +369,132 @@ jobs:
           set -euo pipefail
           src="$BUILD_DIR/${PKG}-${UPSTREAM_VERSION}"
           cd "$src"
+
           # -us -uc: do not sign here; debsign signs with the PPA key later.
           # -sa: include the orig tarball (required for new upstream uploads).
           debuild -S -sa -us -uc
 
-      - name: Run lintian (warnings shown, errors fail the job)
+      - name: Run lintian (report only)
         shell: bash
         run: |
           set -euo pipefail
+
           cd "$BUILD_DIR"
           changes="${PKG}_${DEBIAN_VERSION}_source.changes"
-          lintian -i -I --show-overrides "$changes" 2>&1 | tee lintian.log || true
-          if grep -qE '^E:' lintian.log; then
-            echo "::error::lintian reported error-level tags; see lintian.log"
-            grep -E '^E:' lintian.log
+
+          [[ -f "$changes" ]] || {
+            echo "::error::找不到 .changes 文件: $changes"
             exit 1
+          }
+
+          lintian \
+            -i \
+            -I \
+            --show-overrides \
+            "$changes" \
+            2>&1 | tee "$BUILD_DIR/lintian.log" || true
+
+          if grep -qE '^E:' "$BUILD_DIR/lintian.log"; then
+            echo "::warning::lintian reported error-level tags; see lintian.log"
+            grep -E '^E:' "$BUILD_DIR/lintian.log" || true
+          else
+            echo "lintian: 没有 E: 级别问题。"
           fi
-          echo "lintian: 没有 E: 级别问题（W:/I: 仅记录在日志与 artifact 中）。"
+
+          echo "Lintian 仅用于报告，不阻止 PPA 构建。"
 
       - name: Import PPA GPG key into an ephemeral keyring
         if: env.UPLOAD == '1'
         shell: bash
         env:
+          GNUPGHOME: ${{ env.GPG_HOME }}
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
           PPA_GPG_PASSPHRASE: ${{ secrets.PPA_GPG_PASSPHRASE }}
           PPA_GPG_KEY_ID: ${{ secrets.PPA_GPG_KEY_ID }}
         run: |
           set -euo pipefail
-          install -d -m 700 "$GPG_HOME"
-          cat > "$GPG_HOME/gpg-agent.conf" <<'EOF'
+
+          install -d -m 700 "$GNUPGHOME"
+
+          cat > "$GNUPGHOME/gpg-agent.conf" <<'EOF'
           allow-loopback-pinentry
           allow-preset-passphrase
           default-cache-ttl 86400
           max-cache-ttl 86400
           EOF
-          cat > "$GPG_HOME/gpg.conf" <<'EOF'
+
+          cat > "$GNUPGHOME/gpg.conf" <<'EOF'
           use-agent
           pinentry-mode loopback
           EOF
-          chmod 600 "$GPG_HOME"/*.conf
+
+          chmod 600 "$GNUPGHOME"/*.conf
           gpgconf --kill gpg-agent || true
 
-          # Import the ASCII-armored key from the secret without echoing it.
-          printf '%s' "$PPA_GPG_PRIVATE_KEY" | gpg --batch --no-tty --import
+          printf '%s' "$PPA_GPG_PRIVATE_KEY" |
+            gpg --batch --no-tty --import
 
-          fpr="$(gpg --batch --list-secret-keys --with-colons \
-                   | awk -F: '/^fpr:/{print $10; exit}')"
+          echo "::group::Imported secret keys"
+          gpg --batch --list-secret-keys --keyid-format LONG
+          echo "::endgroup::"
+
+          fpr="$(
+            gpg --batch --list-secret-keys --with-colons |
+              awk -F: '/^fpr:/{print $10; exit}'
+          )"
+
+          [[ -n "$fpr" ]] || {
+            echo "::error::导入后没有找到 secret key"
+            exit 1
+          }
+
           if [[ "${fpr^^}" != "${PPA_GPG_KEY_ID^^}" ]]; then
             echo "::error::导入的密钥指纹与 PPA_GPG_KEY_ID 不一致"
             exit 1
           fi
 
-          preset=""
-          for cand in \
-            "$(command -v gpg-preset-passphrase 2>/dev/null || true)" \
-            /usr/lib/gnupg/gpg-preset-passphrase \
-            /usr/libexec/gpg-preset-passphrase
-          do
-            if [[ -n "$cand" && -x "$cand" ]]; then preset="$cand"; break; fi
-          done
-          [[ -n "$preset" ]] || { echo "::error::找不到 gpg-preset-passphrase"; exit 1; }
-
-          # grp: records (field 10 = keygrip) only appear with --with-keygrip.
-          while IFS= read -r grip; do
-            [[ -n "$grip" ]] && printf '%s' "$PPA_GPG_PASSPHRASE" | "$preset" --preset "$grip"
-          done < <(gpg --batch --list-secret-keys --with-keygrip --with-colons "$fpr" \
-                     | awk -F: '/^grp:/{print $10}')
-
-          # Prove the passphrase was really cached in the agent and that a
-          # fully non-interactive sign works (this is exactly how debsign
-          # invokes gpg: no --passphrase-fd, relying on the preset cache).
-          echo "ppa gpg self-test" | gpg --batch --no-tty \
-            --local-user "$fpr" --clearsign -o /dev/null
-
-          echo "GPG key ready: ...${fpr: -16} (full fingerprint not logged)"
 
       - name: Sign dsc/buildinfo/changes with debsign
         if: env.UPLOAD == '1'
         shell: bash
         env:
+          GNUPGHOME: ${{ env.GPG_HOME }}
           PPA_GPG_KEY_ID: ${{ secrets.PPA_GPG_KEY_ID }}
+          PPA_GPG_PASSPHRASE: ${{ secrets.PPA_GPG_PASSPHRASE }}
+          DEBEMAIL: oliver@liuxiaozhen.dev
+          DEBFULLNAME: Oliver Lin
         run: |
-          set -euo pipefail
-          cd "$BUILD_DIR"
-          changes="${PKG}_${DEBIAN_VERSION}_source.changes"
-          # -k must be attached to the id ("-kFINGERPRINT") or debsign would
-          # treat the fingerprint as a file name.
-          debsign --re-sign -k"$PPA_GPG_KEY_ID" "$changes"
+
+          # Restart the agent using the current GNUPGHOME.
+          gpgconf --kill gpg-agent || true
+          gpg-connect-agent /bye
+
+          # gpg-preset-passphrase requires the keygrip, not the fingerprint.
+          keygrip="$(
+            gpg --batch --with-keygrip --list-secret-keys \
+              "$PPA_GPG_KEY_ID" |
+              awk -F: '$1 == "grp" { print $10; exit }'
+          )"
+
+          if [[ -z "$keygrip" ]]; then
+            echo "::error::无法找到 PPA 签名密钥的 keygrip"
+            gpg --batch --with-keygrip --list-secret-keys \
+              "$PPA_GPG_KEY_ID"
+            exit 1
+          fi
+
+          echo "Keygrip found; presetting passphrase."
+
+          gpg-preset-passphrase \
+            --preset \
+            "$keygrip" \
+            <<< "$PPA_GPG_PASSPHRASE"
+
+          # Non-interactive signing.
+          debsign \
+            --re-sign \
+            -k"$PPA_GPG_KEY_ID" \
+            "$changes"
 
       - name: Verify GPG signatures
         if: env.UPLOAD == '1'

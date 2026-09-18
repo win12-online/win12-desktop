@@ -1,0 +1,13 @@
+# Lintian overrides for the source package (win12-desktop).
+
+# The Debian revision "-1~ubuntu26.04.1" is the project's deliberate PPA
+# versioning scheme for Ubuntu 26.04, not a binary-only NMU changelog entry.
+binary-nmu-debian-revision-in-source
+
+# `cargo vendor` snapshots upstream crates byte-for-byte. A handful of
+# Windows-only crates (libloading's test fixtures, webview2-com-sys'
+# WebView2Loader.dll) ship prebuilt Windows DLLs. They are never touched by
+# the Linux/Launchpad build. Pruning them would require editing each crate's
+# .cargo-checksum.json, which defeats cargo's tamper verification and makes
+# `--offline` builds fragile, so the upstream files are kept and documented.
+source-contains-prebuilt-windows-binary

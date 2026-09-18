@@ -1,10 +1,24 @@
 #!/usr/bin/make -f
+#
+# debian/rules for win12-desktop
+#
+# The Rust dependency graph is vendored into the upstream source tree at
+# tauri/src-tauri/vendor (it lives in the .orig.tar.*, NOT in Git). At build
+# time we point Cargo at that directory via a generated .cargo/config.toml
+# and force --offline so the build never touches crates.io. This is required
+# because Launchpad/PPA build daemons have no network access.
+#
+# All Cargo artifacts (registry cache, target dir) are kept inside the crate
+# tree so nothing is written outside the package directory.
 
-# Keep the Cargo registry cache inside the crate's target directory so the
-# build does not write outside the package tree.
-export CARGO_HOME = $(CURDIR)/tauri/src-tauri/target/cargo-home
+# CARGO_HOME is kept inside the crate tree but OUTSIDE target/, so `cargo
+# clean` (which removes target/) never deletes Cargo's own state mid-run and
+# the registry/cache metadata stays in a stable, well-defined location.
+export CARGO_HOME = $(CURDIR)/tauri/src-tauri/.cargo-home
+export CARGO_NET_OFFLINE = true
 
 TAURI_DIR := tauri/src-tauri
+VENDOR_DIR := vendor
 BINARY := win12-desktop
 APP_ID := io.github.win12_online.win12_desktop
 
@@ -16,8 +30,23 @@ APP_ID := io.github.win12_online.win12_desktop
 override_dh_auto_configure:
 
 override_dh_auto_build:
-	cargo build --release --locked \
-		--manifest-path $(TAURI_DIR)/Cargo.toml
+	# Generate a crate-local Cargo config that redirects crates.io to the
+	# vendored directory. Using a path relative to the crate means this
+	# works regardless of the absolute build path on Launchpad.
+	# This is done here (not in override_dh_auto_configure) because debhelper
+	# may skip the configure phase for build systems it does not recognise,
+	# whereas the build phase always runs.
+	install -d $(TAURI_DIR)/.cargo
+	{ \
+	  echo '[source.crates-io]'; \
+	  echo 'replace-with = "vendored-sources"'; \
+	  echo; \
+	  echo '[source.vendored-sources]'; \
+	  echo 'directory = "$(VENDOR_DIR)"'; \
+	} > $(TAURI_DIR)/.cargo/config.toml
+	# cargo searches for .cargo/config.toml relative to the CWD, so change
+	# into the crate directory to ensure the vendor replacement is picked up.
+	cd $(TAURI_DIR) && cargo build --release --locked --offline
 
 override_dh_auto_test:
 
@@ -34,4 +63,16 @@ override_dh_auto_install:
 		debian/$(BINARY)/usr/share/icons/hicolor/256x256/apps/$(APP_ID).png
 
 override_dh_auto_clean:
-	cargo clean --manifest-path $(TAURI_DIR)/Cargo.toml
+	# No `|| true`: `cargo clean` does not resolve dependencies and never
+	# needs the network, so a real failure must surface instead of being
+	# hidden.
+	cd $(TAURI_DIR) && cargo clean
+	rm -f $(TAURI_DIR)/.cargo/config.toml
+	-rmdir $(TAURI_DIR)/.cargo 2>/dev/null || true
+
+# dh_clean removes every *.orig file by default, which would delete the
+# 500+ vendored Cargo.toml.orig files shipped in the .orig.tar.* (see
+# Debian rust-team, bug #1023413). Exclude them so the vendor tree stays
+# byte-identical to what `cargo vendor` produced.
+override_dh_clean:
+	dh_clean -XCargo.toml.orig

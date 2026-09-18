@@ -1,4 +1,9 @@
 # Local build artifacts are not part of the upstream sources and must not
 # be represented in the auto-generated quilt diff. The regex is matched
 # against pathnames relative to the source root (see dpkg-source(1)).
-extend-diff-ignore = (^|/)(\.flatpak-builder|\.flatpak-build|build-dir|node_modules|target)(/|$)|^tauri/(dist|src-tauri/gen)(/|$)|\.snap$
+#
+# `vendor` is intentionally NOT listed here: it is part of the upstream
+# source (shipped in the .orig.tar.*), so it is not a local change.
+# `.cargo` (build-generated config) and `.cargo-home` (CARGO_HOME cache)
+# are build products, not source, so they are ignored.
+extend-diff-ignore = (^|/)(\.flatpak-builder|\.flatpak-build|build-dir|node_modules|target|\.cargo-home|\.cargo)(/|$)|^tauri/(dist|src-tauri/gen)(/|$)|\.snap$
