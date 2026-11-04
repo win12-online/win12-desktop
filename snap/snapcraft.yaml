@@ -5,7 +5,7 @@ description: |
   Win12 Desktop is a Windows 12-like desktop environment implemented
   with Tauri for Linux.
 
-version: "0.3.2"
+version: "0.3.3"
 website: https://github.com/win12-online/win12-desktop
 source-code: https://github.com/win12-online/win12-desktop
 issues: https://github.com/win12-online/win12-desktop/issues

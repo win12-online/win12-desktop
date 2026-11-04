@@ -74,6 +74,13 @@
         <p>1.增加WebGL功能</p>
       </description>
     </release>
+    <release version="0.3.3" date="2026-11-04">
+      <description>
+        <!-- TODO: 填写本次发版的更新日志 -->
+        <p>修复：移除 AI 聊天错误提示，并更新 Copilot 的点击处理程序</p>
+        <p>添加纸牌游戏</p>
+      </description>
+    </release>
 </releases>
 
   <launchable type="desktop-id">

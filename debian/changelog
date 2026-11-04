@@ -1,3 +1,10 @@
+win12-desktop (0.3.3-1~ubuntu26.04.1) resolute; urgency=medium
+
+  * 修复：移除 AI 聊天错误提示，更新 Copilot 的点击处理程序
+  * 添加纸牌游戏
+
+ -- Oliver Lin <oliver@liuxiaozhen.dev>  Wed, 04 Nov 2026 20:28:00 +0800
+
 win12-desktop (0.3.0-3~ubuntu26.04.1) resolute; urgency=medium
 
   * Fix offline build

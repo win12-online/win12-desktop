@@ -1,6 +1,6 @@
 [package]
 name = "win12-desktop"
-version = "0.3.2"
+version = "0.3.3"
 description = "Win12 for desktop"
 authors = ["win12-online"]
 edition = "2021"
