@@ -81,6 +81,13 @@
         <p>添加纸牌游戏</p>
       </description>
     </release>
+    <release version="0.3.4" date="2026-11-15">
+      <description>
+        <p>1.修复扫雷游戏中存在的已知问题</p>
+        <p>2.更新语言表</p>
+        <p>3.移除与替换keyCode以增加可读性和兼容建状性</p>
+      </description>
+    </release>
 </releases>
 
   <launchable type="desktop-id">
